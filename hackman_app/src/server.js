@@ -7,8 +7,9 @@ const app = express();
 
 // Middleware
 const allowedOrigins = [
-  'http://localhost:5173',        // local dev
-  'https://carbon-frontend.onrender.com' // deployed frontend
+  'http://localhost:5173',          // local development
+  'https://rrp14.github.io',        // your GitHub Pages frontend
+  'https://carbon-frontend.onrender.com' // (if you deploy frontend later)
 ];
 
 app.use(cors({
@@ -21,6 +22,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
