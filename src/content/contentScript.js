@@ -51,46 +51,36 @@ function extractBigBasketItems() {
   // Try to extract real items from BigBasket
   const items = [];
   
-  // Prefer the exact BigBasket UL/LI classes when present
-  // Primary approach: find all UL groups that match the provided UL classname
-  const groupUls = Array.from(document.querySelectorAll('ul[class*="BasketGroup___"], ul.kXTIrq'));
+  // Primary selectors using the exact BigBasket classnames
+  const primarySelector = {
+    listItem: 'ul.BasketGroup___StyledUl-sc-obttrd-0.kXTIrq li.BasketItem___StyledLi-sc-pyj73d-0.bbfXYq',
+    imageDiv: '[class*="ItemsHeader___StyledDiv-sc-1sc68yr-0"]',
+    image: '[class*="BasketImage___StyledImage2-sc-1upl47q-2"][class*="ItemsHeader___StyledBasketImage"]',
+    nameDiv: '[class*="BasketDescription___StyledDiv-sc-1soo8mb-0"][class*="ItemsHeader___StyledBasketDescription"]',
+    priceSpan: '[class*="Label-sc-15v1nk5-0"][class*="BasketPrice___StyledLabel"]',
+    unitsDiv: '[class*="CartCTA___StyledDiv2-sc-auxm26-3"]'
+  };
 
-  if (groupUls.length > 0) {
-    groupUls.forEach(ul => {
-      // collect LI children that match the BasketItem classname(s)
-      const liElements = Array.from(ul.querySelectorAll('li[class*="BasketItem___"], li.bbfXYq'));
-      liElements.forEach(element => {
-      // Heuristics to find product name and quantity inside the LI
-      const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
-      const qtyEl = element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
+  const primaryElements = document.querySelectorAll(primarySelector.listItem);
+  if (primaryElements && primaryElements.length > 0) {
+    primaryElements.forEach(element => {
+      // Heuristics: extract details directly from each LI element
+      const imageEl = element.querySelector(primarySelector.image);
+      const nameDiv = element.querySelector(primarySelector.nameDiv) || element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
+      const priceSpan = element.querySelector(primarySelector.priceSpan);
+      const unitsDiv = element.querySelector(primarySelector.unitsDiv) || element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
 
-      let name = nameEl?.textContent || '';
-      let quantity = qtyEl?.textContent || '';
+      let name = nameDiv?.textContent?.trim() || '';
+      let quantity = unitsDiv?.textContent?.trim() || '1 unit';
+      let price = priceSpan?.textContent?.trim()?.replace('₹', '') || '0';
+      let imageUrl = imageEl?.src || imageEl?.getAttribute('data-src') || '';
 
-      // Fallback heuristics if specific sub-elements not found
-      if (!name) {
-        // Try first strong/span/text node inside li
-        const text = element.textContent || '';
-        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-        name = lines[0] || '';
-        if (lines.length > 1 && !quantity) {
-          // look for a token that looks like quantity (e.g. '1 kg', '500 g', '2 pcs')
-          const qtyMatch = lines.find(l => /\b\d+\s?(kg|g|pcs|pc|units|unit|ltr|ml)\b/i);
-          if (qtyMatch) quantity = qtyMatch;
-        }
+      // Clean up the extracted data
+      price = parseFloat((price || '').replace(/[^0-9.]/g, '')) || 0;
+
+      if (name) {
+        items.push({ name, quantity, price, imageUrl, estimatedCarbon: calculateCarbonFootprint(name) });
       }
-
-        name = name.trim();
-        quantity = quantity.trim() || '1 unit';
-
-        if (name) {
-          items.push({
-            name,
-            quantity,
-            estimatedCarbon: calculateCarbonFootprint(name)
-          });
-        }
-      });
     });
 
     // dedupe by name+quantity
@@ -106,13 +96,12 @@ function extractBigBasketItems() {
     return deduped;
   }
 
-  // If the primary selector didn't match, try some broader selectors (no demo fallback)
-  // If no BasketGroup ULs found, try broader selectors and aggregate across all matches
-  const fallbackSelectors = ['[data-qa="cart-item"]', '[class*="basket-item"]', '[class*="cart-item"]', '.product-item', '.item', 'ul li'];
-  for (const selector of fallbackSelectors) {
-    const elements = Array.from(document.querySelectorAll(selector));
-    if (elements && elements.length > 0) {
-      elements.forEach(element => {
+  // Limit fallbacks to elements inside known cart containers to avoid picking unrelated items
+  const cartRoots = Array.from(document.querySelectorAll('.basket-content, [data-qa="cart-item"], [class*="cart"], [data-testid*="cart"]'));
+  if (cartRoots.length > 0) {
+    cartRoots.forEach(root => {
+      const liCandidates = Array.from(root.querySelectorAll('li[class*="BasketItem___"], li.bbfXYq, [data-qa="cart-item"], [class*="cart-item"]'));
+      liCandidates.forEach(element => {
         const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
         const qtyEl = element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
 
@@ -131,29 +120,24 @@ function extractBigBasketItems() {
         quantity = quantity.trim() || '1 unit';
 
         if (name) {
-          items.push({
-            name,
-            quantity,
-            estimatedCarbon: calculateCarbonFootprint(name)
-          });
+          items.push({ name, quantity, estimatedCarbon: calculateCarbonFootprint(name) });
         }
       });
-      // continue to next selector to aggregate more items rather than returning early
-    }
-  }
-
-  // dedupe aggregated fallback results
-  if (items.length > 0) {
-    const deduped = [];
-    const seen = new Set();
-    items.forEach(it => {
-      const key = `${it.name}||${it.quantity}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduped.push(it);
-      }
     });
-    return deduped;
+
+    // dedupe aggregated fallback results
+    if (items.length > 0) {
+      const deduped = [];
+      const seen = new Set();
+      items.forEach(it => {
+        const key = `${it.name}||${it.quantity}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduped.push(it);
+        }
+      });
+      return deduped;
+    }
   }
 
   // If nothing found, return an empty array (do NOT return demo/fallback data as requested)

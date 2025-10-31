@@ -35,14 +35,18 @@ function Popup() {
       setIsActive(true);
       
       // Request current cart data
-      chrome.tabs.sendMessage(tab.id, { action: 'SCAN_CART' }, (response) => {
-        if (response?.success) {
-          setCartData({
-            site: response.site,
-            items: response.items
-          });
-        }
-      });
+        chrome.tabs.sendMessage(tab.id, { action: 'SCAN_CART' }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.warn('SCAN_CART sendMessage error:', chrome.runtime.lastError.message);
+            return;
+          }
+          if (response?.success) {
+            setCartData({
+              site: response.site,
+              items: response.items
+            });
+          }
+        });
     }
   };
 
@@ -51,16 +55,20 @@ function Popup() {
     if (!tab) return;
     setIsScanning(true);
     chrome.tabs.sendMessage(tab.id, { action: 'SCAN_CART' }, (response) => {
-      try {
-        if (response?.success) {
-          setCartData({ site: response.site, items: response.items });
-          setIsActive(true);
-        }
-      } finally {
-        // ensure spinner toggles off even if response is undefined
-        setIsScanning(false);
-      }
-    });
+          try {
+            if (chrome.runtime.lastError) {
+              console.warn('SCAN_CART sendMessage error:', chrome.runtime.lastError.message);
+              return;
+            }
+            if (response?.success) {
+              setCartData({ site: response.site, items: response.items });
+              setIsActive(true);
+            }
+          } finally {
+            // ensure spinner toggles off even if response is undefined
+            setIsScanning(false);
+          }
+        });
   };
 
   const calculateCarbon = (items) => {
@@ -106,7 +114,7 @@ function Popup() {
           <button
             onClick={scanNow}
             disabled={isScanning}
-            className={`px-3 py-1 text-xs font-medium rounded ${isScanning ? 'bg-gray-300 text-gray-700' : 'bg-green-600 text-white'}`}>
+            className={`px-3 py-1 text-xs font-medium rounded ${isScanning ? 'bg-gray-300 text-gray-700' : 'bg-green-600 text-white hover:bg-green-700'}`}>
             {isScanning ? 'Refreshing…' : 'Refresh ⟳'}
           </button>
         </div>
@@ -146,20 +154,33 @@ function Popup() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {cartData.items.map((item, index) => (
-                  <div key={index} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
-                    <div className="flex-1">
-                      <div className="text-sm font-medium">{item.name}</div>
-                      <div className="text-xs text-gray-500">{item.quantity}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className={`text-sm font-semibold ${
-                        item.estimatedCarbon > 2 ? 'text-red-600' : 
-                        item.estimatedCarbon > 1 ? 'text-yellow-600' : 
-                        'text-green-600'
-                      }`}>{(item.estimatedCarbon || 0).toFixed(2)} kg</div>
-                      <div className="text-xs text-gray-400">per unit</div>
+                  <div key={index} className="flex items-start space-x-3 p-2 border border-gray-100 rounded-lg hover:bg-gray-50">
+                    {item.imageUrl && (
+                      <img 
+                        src={item.imageUrl} 
+                        alt={item.name}
+                        className="w-16 h-16 object-cover rounded-lg border border-gray-200"
+                        onError={(e) => e.target.style.display = 'none'}
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900 truncate">{item.name}</div>
+                      <div className="mt-1 flex items-center text-xs text-gray-500">
+                        <span className="font-medium">₹{item.price}</span>
+                        <span className="mx-1">•</span>
+                        <span>{item.quantity}</span>
+                      </div>
+                      <div className="mt-1 flex items-center">
+                        <div className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                          item.estimatedCarbon > 2 ? 'bg-red-100 text-red-700' : 
+                          item.estimatedCarbon > 1 ? 'bg-yellow-100 text-yellow-700' : 
+                          'bg-green-100 text-green-700'
+                        }`}>
+                          {(item.estimatedCarbon || 0).toFixed(1)} kg CO₂
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ))}
