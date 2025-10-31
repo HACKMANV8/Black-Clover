@@ -1,9 +1,11 @@
 // Content script for BigBasket and Zepto
+// Scraper extracts product name, quantity, price, image and (if available)
+// the "Sourced & Marketed By:" text from product detail pages.
+
 console.log('CarbonCart content script loaded!');
 
 function scanCart() {
   const currentSite = window.location.hostname;
-  
   if (currentSite.includes('bigbasket')) {
     scanBigBasketCart();
   } else if (currentSite.includes('zepto')) {
@@ -19,12 +21,11 @@ function scanBigBasketCart() {
   ].filter(Boolean);
 
   if (cartIndicators.length > 0 || window.location.href.includes('/cart')) {
-    chrome.runtime.sendMessage({
-      type: 'CART_DETECTED',
-      data: {
-        site: 'bigbasket.com',
-        items: extractBigBasketItems()
-      }
+    extractBigBasketItems((items) => {
+      chrome.runtime.sendMessage({
+        type: 'CART_DETECTED',
+        data: { site: 'bigbasket.com', items }
+      });
     });
   }
 }
@@ -39,146 +40,103 @@ function scanZeptoCart() {
   if (cartIndicators.length > 0 || window.location.href.includes('/cart')) {
     chrome.runtime.sendMessage({
       type: 'CART_DETECTED',
-      data: {
-        site: 'zepto.com',
-        items: extractZeptoItems()
-      }
+      data: { site: 'zepto.com', items: extractZeptoItems() }
     });
   }
 }
 
-function extractBigBasketItems() {
-  // Try to extract real items from BigBasket
+function extractBigBasketItems(callback) {
+  // Use the exact class names provided by the user to find items
   const items = [];
-  
-  // Primary selectors using the exact BigBasket classnames
-  const primarySelector = {
-    listItem: 'ul.BasketGroup___StyledUl-sc-obttrd-0.kXTIrq li.BasketItem___StyledLi-sc-pyj73d-0.bbfXYq',
-    imageDiv: '[class*="ItemsHeader___StyledDiv-sc-1sc68yr-0"]',
-    image: '[class*="BasketImage___StyledImage2-sc-1upl47q-2"][class*="ItemsHeader___StyledBasketImage"]',
-    nameDiv: '[class*="BasketDescription___StyledDiv-sc-1soo8mb-0"][class*="ItemsHeader___StyledBasketDescription"]',
-    priceSpan: '[class*="Label-sc-15v1nk5-0"][class*="BasketPrice___StyledLabel"]',
-    unitsDiv: '[class*="CartCTA___StyledDiv2-sc-auxm26-3"]'
+  const primary = {
+    header: '.ItemsHeader___StyledDiv-sc-1sc68yr-0.ZFUYM',
+    imageClass: 'BasketImage___StyledImage2-sc-1upl47q-2',
+    nameClass: 'BasketDescription___StyledDiv-sc-1soo8mb-0',
+    priceClass: 'BasketPrice___StyledLabel-sc-f8v9oi-1',
+    unitsClass: 'CartCTA___StyledDiv2-sc-auxm26-3',
+    sourceInfo: '.MoreDetails___StyledDiv-sc-1h9rbjh-0.kIqWEi p'
   };
 
-  const primaryElements = document.querySelectorAll(primarySelector.listItem);
-  if (primaryElements && primaryElements.length > 0) {
-    primaryElements.forEach(element => {
-      // Heuristics: extract details directly from each LI element
-      const imageEl = element.querySelector(primarySelector.image);
-      const nameDiv = element.querySelector(primarySelector.nameDiv) || element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
-      const priceSpan = element.querySelector(primarySelector.priceSpan);
-      const unitsDiv = element.querySelector(primarySelector.unitsDiv) || element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
+  // Find item headers first (these were provided by you)
+  let headers = Array.from(document.querySelectorAll(primary.header));
 
-      let name = nameDiv?.textContent?.trim() || '';
-      let quantity = unitsDiv?.textContent?.trim() || '1 unit';
-      let price = priceSpan?.textContent?.trim()?.replace('₹', '') || '0';
-      let imageUrl = imageEl?.src || imageEl?.getAttribute('data-src') || '';
+  // Fallback to li items if headers not present
+  if (!headers.length) headers = Array.from(document.querySelectorAll('li[class*="BasketItem"], [data-qa="cart-item"]'));
 
-      // Clean up the extracted data
-      price = parseFloat((price || '').replace(/[^0-9.]/g, '')) || 0;
-
-      if (name) {
-        items.push({ name, quantity, price, imageUrl, estimatedCarbon: calculateCarbonFootprint(name) });
-      }
-    });
-
-    // dedupe by name+quantity
-    const deduped = [];
-    const seen = new Set();
-    items.forEach(it => {
-      const key = `${it.name}||${it.quantity}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduped.push(it);
-      }
-    });
-    return deduped;
+  if (!headers.length) {
+    console.log('CarbonCart: no cart items found for BigBasket');
+    callback([]);
+    return;
   }
 
-  // Limit fallbacks to elements inside known cart containers to avoid picking unrelated items
-  const cartRoots = Array.from(document.querySelectorAll('.basket-content, [data-qa="cart-item"], [class*="cart"], [data-testid*="cart"]'));
-  if (cartRoots.length > 0) {
-    cartRoots.forEach(root => {
-      const liCandidates = Array.from(root.querySelectorAll('li[class*="BasketItem___"], li.bbfXYq, [data-qa="cart-item"], [class*="cart-item"]'));
-      liCandidates.forEach(element => {
-        const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
-        const qtyEl = element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
+  // Extract basic fields immediately
+  headers.forEach((header) => {
+    const container = header.closest('li') || header.parentElement || header;
 
-        let name = nameEl?.textContent || '';
-        let quantity = qtyEl?.textContent || '';
+    const imageEl = header.querySelector(`img[class*="${primary.imageClass}"]`) || header.querySelector('img');
+    const nameDiv = header.querySelector(`[class*="${primary.nameClass}"]`) || header.querySelector('[data-qa="product-name"]') || header.querySelector('a, h3, h4');
+    const priceEl = container.querySelector(`[class*="${primary.priceClass}"]`) || container.querySelector('span');
+    const unitsEl = container.querySelector(`[class*="${primary.unitsClass}"]`) || container.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"]');
 
-        if (!name) {
-          const text = element.textContent || '';
-          const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-          name = lines[0] || '';
-          const qtyMatch = lines.find(l => /\b\d+\s?(kg|g|pcs|pc|units|unit|ltr|ml)\b/i);
-          if (qtyMatch) quantity = quantity || qtyMatch;
-        }
+    const name = nameDiv?.textContent?.trim() || '';
+    const quantity = unitsEl?.textContent?.trim() || '1';
+    let priceText = priceEl?.textContent?.trim() || '0';
+    const imageUrl = imageEl?.src || imageEl?.getAttribute('data-src') || '';
 
-        name = name.trim();
-        quantity = quantity.trim() || '1 unit';
+    priceText = (priceText || '').replace('₹', '').replace(/[^0-9.]/g, '');
+    const price = parseFloat(priceText) || 0;
 
-        if (name) {
-          items.push({ name, quantity, estimatedCarbon: calculateCarbonFootprint(name) });
-        }
-      });
+    items.push({ name, quantity, price, imageUrl, sourceLocation: '', estimatedCarbon: calculateCarbonFootprint(name) });
+  });
+
+  // Fetch product pages (best-effort) to get "Sourced & Marketed By:" text
+  const fetchPromises = items.map((item) => {
+    return new Promise((resolve) => {
+      const header = headers.find(h => h.textContent && item.name && h.textContent.includes(item.name.split('\n')[0].trim()));
+      if (!header) return resolve();
+
+      const link = header.querySelector('a[href*="/pd/"]') || header.querySelector('a[href*="/product/"]') || header.querySelector('a');
+      if (!link || !link.href) return resolve();
+
+      fetch(link.href)
+        .then(res => res.text())
+        .then(html => {
+          try {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const sourceEl = doc.querySelector(primary.sourceInfo);
+            if (sourceEl) {
+              const txt = sourceEl.textContent || '';
+              const m = txt.match(/Sourced & Marketed By:(.*)/i);
+              if (m && m[1]) item.sourceLocation = m[1].trim();
+              else item.sourceLocation = txt.replace(/Sourced & Marketed By[:\s]*/i, '').trim();
+            }
+          } catch (e) {
+            console.error('CarbonCart: parse product html error', e);
+          }
+        })
+        .catch(err => {
+          console.error('CarbonCart: fetch product page failed', err);
+        })
+        .finally(() => resolve());
     });
+  });
 
-    // dedupe aggregated fallback results
-    if (items.length > 0) {
-      const deduped = [];
-      const seen = new Set();
-      items.forEach(it => {
-        const key = `${it.name}||${it.quantity}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          deduped.push(it);
-        }
-      });
-      return deduped;
-    }
-  }
-
-  // If nothing found, return an empty array (do NOT return demo/fallback data as requested)
-  console.warn('CarbonCart: No real BigBasket cart items found by scraper.');
-  return [];
+  Promise.all(fetchPromises).then(() => callback(items));
 }
 
 function extractZeptoItems() {
-  // Try to extract real items from Zepto
   const items = [];
-  
-  const itemSelectors = [
-    '[data-testid*="cart-item"]',
-    '.cart-item',
-    '.product-item',
-    '[class*="item"]'
-  ];
-  
+  const itemSelectors = ['[data-testid*="cart-item"]', '.cart-item', '.product-item', '[class*="item"]'];
+
   itemSelectors.forEach(selector => {
     const elements = document.querySelectorAll(selector);
     elements.forEach(element => {
-      const name = element.querySelector('[data-testid*="name"]')?.textContent ||
-                   element.querySelector('.product-name')?.textContent ||
-                   element.querySelector('.name')?.textContent ||
-                   'Zepto Product';
-      
-      const quantity = element.querySelector('.quantity')?.textContent || 
-                       element.querySelector('.qty')?.textContent ||
-                       '1 unit';
-      
-      if (name && name !== 'Zepto Product') {
-        items.push({
-          name: name.trim(),
-          quantity: quantity.trim(),
-          estimatedCarbon: calculateCarbonFootprint(name)
-        });
-      }
+      const name = element.querySelector('[data-testid*="name"]')?.textContent || element.querySelector('.product-name')?.textContent || element.querySelector('.name')?.textContent || '';
+      const quantity = element.querySelector('.quantity')?.textContent || element.querySelector('.qty')?.textContent || '1 unit';
+      if (name) items.push({ name: name.trim(), quantity: quantity.trim(), estimatedCarbon: calculateCarbonFootprint(name) });
     });
   });
-  
-  // Fallback to demo data if no real items found
+
   if (items.length === 0) {
     return [
       { name: 'Organic Tomatoes', quantity: '500 g', estimatedCarbon: 0.5 },
@@ -186,12 +144,11 @@ function extractZeptoItems() {
       { name: 'Fresh Potatoes', quantity: '1 kg', estimatedCarbon: 0.3 }
     ];
   }
-  
+
   return items;
 }
 
 function calculateCarbonFootprint(productName) {
-  // Carbon footprint database (kg CO2 per kg of product)
   const carbonData = {
     'tomato': 0.5, 'tomatoes': 0.5,
     'rice': 4.0, 'basmati': 4.0, 'brown rice': 3.5,
@@ -203,15 +160,9 @@ function calculateCarbonFootprint(productName) {
     'lentils': 0.9, 'dal': 0.9,
     'flour': 1.1, 'atta': 1.1
   };
-  
-  const name = productName.toLowerCase();
-  for (const [key, value] of Object.entries(carbonData)) {
-    if (name.includes(key)) {
-      return value;
-    }
-  }
-  
-  return 1.0; // Default carbon value
+  const name = (productName || '').toLowerCase();
+  for (const [key, value] of Object.entries(carbonData)) if (name.includes(key)) return value;
+  return 1.0;
 }
 
 // Scan when page loads
@@ -231,19 +182,14 @@ new MutationObserver(() => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'SCAN_CART') {
     const currentSite = window.location.hostname;
-    let items = [];
-    
     if (currentSite.includes('bigbasket')) {
-      items = extractBigBasketItems();
+      extractBigBasketItems((items) => sendResponse({ success: true, items, site: currentSite }));
+      return true; // keep channel open for async response
     } else if (currentSite.includes('zepto')) {
-      items = extractZeptoItems();
+      const items = extractZeptoItems();
+      sendResponse({ success: true, items, site: currentSite });
+      return false;
     }
-    
-    sendResponse({ 
-      success: true, 
-      items,
-      site: currentSite
-    });
   }
-  return true;
+  return false;
 });
