@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "CarbonCart",
+  "name": "CarbonCart(final)",
   "version": "1.0.0",
   "description": "AI-powered carbon footprint tracker for your shopping cart",
   "action": {
     "default_popup": "index.html",
-    "default_title": "CarbonCart"
+    "default_title": "CarbonCart(final)"
   },
   "content_scripts": [
     {
@@ -23,6 +23,6 @@
     "activeTab"
   ],
   "icons": {
-    "48": "public/carbon.png"
+    "48": "public/icon32.png"
   }
 }
