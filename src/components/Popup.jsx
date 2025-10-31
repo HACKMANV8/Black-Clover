@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 function Popup() {
   const [cartData, setCartData] = useState(null);
   const [isActive, setIsActive] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Keep a reference to the runtime listener so we can remove it on unmount
   useEffect(() => {
@@ -48,10 +49,16 @@ function Popup() {
   const scanNow = async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
+    setIsScanning(true);
     chrome.tabs.sendMessage(tab.id, { action: 'SCAN_CART' }, (response) => {
-      if (response?.success) {
-        setCartData({ site: response.site, items: response.items });
-        setIsActive(true);
+      try {
+        if (response?.success) {
+          setCartData({ site: response.site, items: response.items });
+          setIsActive(true);
+        }
+      } finally {
+        // ensure spinner toggles off even if response is undefined
+        setIsScanning(false);
       }
     });
   };
@@ -90,9 +97,19 @@ function Popup() {
 
   return (
     <div className="w-80 p-4">
-      <header className="text-center mb-4">
-        <h1 className="text-xl font-bold text-green-700">🌱 CarbonCart</h1>
-        <p className="text-sm text-gray-600">Shopping on {cartData?.site}</p>
+      <header className="flex items-center justify-between mb-4">
+        <div>
+          <h1 className="text-xl font-bold text-green-700">🌱 CarbonCart</h1>
+          <p className="text-sm text-gray-600">Shopping on {cartData?.site}</p>
+        </div>
+        <div>
+          <button
+            onClick={scanNow}
+            disabled={isScanning}
+            className={`px-3 py-1 text-xs font-medium rounded ${isScanning ? 'bg-gray-300 text-gray-700' : 'bg-green-600 text-white'}`}>
+            {isScanning ? 'Refreshing…' : 'Refresh ⟳'}
+          </button>
+        </div>
       </header>
 
       {cartData && (
