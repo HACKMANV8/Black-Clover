@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "CarbonCart",
+  "version": "1.0.0",
+  "description": "AI-powered carbon footprint tracker for your shopping cart",
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "CarbonCart"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://bigbasket.com/*",
+        "https://www.bigbasket.com/*",
+        "https://blinkit.com/*",
+        "https://www.blinkit.com/*"
+      ],
+      "js": ["src/content/contentScript.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "permissions": [
+    "activeTab"
+  ],
+  "icons": {
+    "48": "public/carbon.png"
+  }
+}
