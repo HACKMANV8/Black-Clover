@@ -6,11 +6,23 @@ require('dotenv').config();
 const app = express();
 
 // Middleware
+const allowedOrigins = [
+  'http://localhost:5173',        // local dev
+  'https://carbon-frontend.onrender.com' // deployed frontend
+];
+
 app.use(cors({
-  origin: '*', // For testing only, allow all origins
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
+
 app.use(express.json());
 
 // Connect to MongoDB
