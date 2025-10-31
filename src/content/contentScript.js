@@ -51,42 +51,86 @@ function extractBigBasketItems() {
   // Try to extract real items from BigBasket
   const items = [];
   
-  const itemSelectors = [
-    '[data-qa="cart-item"]',
-    '.item',
-    '.basket-item',
-    '.product'
-  ];
-  
-  itemSelectors.forEach(selector => {
-    const elements = document.querySelectorAll(selector);
-    elements.forEach(element => {
-      const name = element.querySelector('[data-qa="product-name"]')?.textContent || 
-                   element.querySelector('.prod-name')?.textContent ||
-                   'BigBasket Product';
-      
-      const quantity = element.querySelector('.qty')?.textContent || '1 unit';
-      
-      if (name && name !== 'BigBasket Product') {
+  // Prefer the exact BigBasket UL/LI classes when present
+  // Primary selector using provided classnames
+  const primarySelector = 'ul.BasketGroup___StyledUl-sc-obttrd-0.kXTIrq li.BasketItem___StyledLi-sc-pyj73d-0.bbfXYq';
+  const primaryElements = document.querySelectorAll(primarySelector);
+
+  if (primaryElements && primaryElements.length > 0) {
+    primaryElements.forEach(element => {
+      // Heuristics to find product name and quantity inside the LI
+      const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
+      const qtyEl = element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
+
+      let name = nameEl?.textContent || '';
+      let quantity = qtyEl?.textContent || '';
+
+      // Fallback heuristics if specific sub-elements not found
+      if (!name) {
+        // Try first strong/span/text node inside li
+        const text = element.textContent || '';
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        name = lines[0] || '';
+        if (lines.length > 1 && !quantity) {
+          // look for a token that looks like quantity (e.g. '1 kg', '500 g', '2 pcs')
+          const qtyMatch = lines.find(l => /\b\d+\s?(kg|g|pcs|pc|units|unit|ltr|ml)\b/i);
+          if (qtyMatch) quantity = qtyMatch;
+        }
+      }
+
+      name = name.trim();
+      quantity = quantity.trim() || '1 unit';
+
+      if (name) {
         items.push({
-          name: name.trim(),
-          quantity: quantity.trim(),
+          name,
+          quantity,
           estimatedCarbon: calculateCarbonFootprint(name)
         });
       }
     });
-  });
-  
-  // Fallback to demo data if no real items found
-  if (items.length === 0) {
-    return [
-      { name: 'Fresh Tomatoes', quantity: '1 kg', estimatedCarbon: 0.5 },
-      { name: 'Basmati Rice', quantity: '2 kg', estimatedCarbon: 8.0 },
-      { name: 'Organic Potatoes', quantity: '500 g', estimatedCarbon: 0.3 }
-    ];
+    return items; // return only real scraped items
   }
-  
-  return items;
+
+  // If the primary selector didn't match, try some broader selectors (no demo fallback)
+  const fallbackSelectors = ['[data-qa="cart-item"]', '[class*="basket-item"]', '[class*="cart-item"]', '.product-item', '.item'];
+  for (const selector of fallbackSelectors) {
+    const elements = document.querySelectorAll(selector);
+    if (elements && elements.length > 0) {
+      elements.forEach(element => {
+        const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
+        const qtyEl = element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
+
+        let name = nameEl?.textContent || '';
+        let quantity = qtyEl?.textContent || '';
+
+        if (!name) {
+          const text = element.textContent || '';
+          const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+          name = lines[0] || '';
+          const qtyMatch = lines.find(l => /\b\d+\s?(kg|g|pcs|pc|units|unit|ltr|ml)\b/i);
+          if (qtyMatch) quantity = quantity || qtyMatch;
+        }
+
+        name = name.trim();
+        quantity = quantity.trim() || '1 unit';
+
+        if (name) {
+          items.push({
+            name,
+            quantity,
+            estimatedCarbon: calculateCarbonFootprint(name)
+          });
+        }
+      });
+      // return whatever we found from broader selectors
+      return items;
+    }
+  }
+
+  // If nothing found, return an empty array (do NOT return demo/fallback data as requested)
+  console.warn('CarbonCart: No real BigBasket cart items found by scraper.');
+  return [];
 }
 
 function extractZeptoItems() {
