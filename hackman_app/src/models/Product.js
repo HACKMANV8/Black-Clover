@@ -1,0 +1,57 @@
+const mongoose = require('mongoose');
+
+const carbonFootprintFields = {
+  growing: Number,
+  transportation: Number,
+  packaging: Number,
+  storage: Number,
+  total: Number
+};
+
+const platformDataSchema = new mongoose.Schema({
+  platform: {
+    type: String,
+    required: true
+  },
+  price: {
+    type: Number,
+    required: true
+  },
+  date: {
+    type: Date,
+    required: true
+  },
+  link: {
+    type: String,
+    required: true
+  },
+  carbonFootprint: carbonFootprintFields
+});
+
+const productSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true
+  },
+  category: {
+    type: String,
+    required: true,
+    enum: ['fruits', 'vegetables']
+  },
+  description: {
+    type: String,
+    required: true
+  },
+  imageUrl: {
+    type: String,
+    required: true
+  },
+  platformData: [platformDataSchema]
+}, {
+  timestamps: true
+});
+
+// Add text index for search functionality
+productSchema.index({ name: 'text', description: 'text' });
+
+module.exports = mongoose.model('Product', productSchema);

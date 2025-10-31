@@ -1,0 +1,149 @@
+const express = require('express');
+const router = express.Router();
+const Product = require('../models/Product');
+const auth = require('../middleware/auth');
+
+// GET all products with pagination and sorting
+router.get('/', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const sort = req.query.sort || 'name';
+    const order = req.query.order === 'desc' ? -1 : 1;
+
+    let products = await Product.find()
+      .skip((page - 1) * limit)
+      .limit(limit);
+    
+    // Add average price and carbon footprint calculation from platformData
+    products = products.map(product => {
+      const doc = product.toObject();
+      const platforms = doc.platformData || [];
+      const prices = platforms.map(pd => pd.price);
+      doc.averagePrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+      doc.totalCarbonFootprint = platforms.reduce((sum, pd) => sum + (pd.carbonFootprint?.total || 0), 0);
+      return doc;
+    });
+
+    // Sort by averagePrice if that's the sort field
+    if (sort === 'price') {
+      products.sort((a, b) => order === 1 ? 
+        (a.averagePrice - b.averagePrice) : 
+        (b.averagePrice - a.averagePrice)
+      );
+    } else if (sort === 'carbonFootprint') {
+      products.sort((a, b) => order === 1 ?
+        (a.totalCarbonFootprint - b.totalCarbonFootprint) :
+        (b.totalCarbonFootprint - a.totalCarbonFootprint)
+      );
+    } else {
+      // For other fields, sort normally
+      products.sort((a, b) => order === 1 ? 
+        (a[sort] > b[sort] ? 1 : -1) : 
+        (b[sort] > a[sort] ? 1 : -1)
+      );
+    }
+
+    const total = await Product.countDocuments();
+
+    res.json({
+      products,
+      currentPage: page,
+      totalPages: Math.ceil(total / limit),
+      totalProducts: total
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Search products
+router.get('/search', async (req, res) => {
+  try {
+    const searchTerm = req.query.q;
+    if (!searchTerm) {
+      return res.status(400).json({ message: 'Search term is required' });
+    }
+
+    let products = await Product.find({
+      $and: [
+        { $text: { $search: searchTerm } },
+        { category: { $in: ['fruits', 'vegetables'] } }
+      ]
+    }).sort({ score: { $meta: 'textScore' } });
+
+    // Add average price and carbon footprint for each product
+    products = products.map(product => {
+      const doc = product.toObject();
+      const platforms = doc.platformData || [];
+      const prices = platforms.map(pd => pd.price);
+      doc.averagePrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+      doc.totalCarbonFootprint = platforms.reduce((sum, pd) => sum + (pd.carbonFootprint?.total || 0), 0);
+      return doc;
+    });
+
+    res.json(products);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Add new product (Admin only)
+router.post('/', auth, async (req, res) => {
+  try {
+    const product = new Product(req.body);
+    const savedProduct = await product.save();
+    
+    // Calculate and return average price and carbon footprint in response
+    const doc = savedProduct.toObject();
+    const platforms = doc.platformData || [];
+    const prices = platforms.map(pd => pd.price);
+    doc.averagePrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+    doc.totalCarbonFootprint = platforms.reduce((sum, pd) => sum + (pd.carbonFootprint?.total || 0), 0);
+    
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// Update product (Admin only)
+router.patch('/:id', auth, async (req, res) => {
+  try {
+    const updates = Object.keys(req.body);
+    const product = await Product.findById(req.params.id);
+    
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    updates.forEach(update => product[update] = req.body[update]);
+    const savedProduct = await product.save();
+    
+    // Calculate and return average price and carbon footprint in response
+    const doc = savedProduct.toObject();
+    const platforms = doc.platformData || [];
+    const prices = platforms.map(pd => pd.price);
+    doc.averagePrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+    doc.totalCarbonFootprint = platforms.reduce((sum, pd) => sum + (pd.carbonFootprint?.total || 0), 0);
+    
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// Delete product (Admin only)
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    const product = await Product.findByIdAndDelete(req.params.id);
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+    res.json({ message: 'Product deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+module.exports = router;
