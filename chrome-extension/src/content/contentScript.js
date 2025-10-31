@@ -52,7 +52,7 @@ function extractBigBasketItems(callback) {
     header: '.ItemsHeader___StyledDiv-sc-1sc68yr-0.ZFUYM',
     // imageClass targets the <img> element; imageContainerClass targets the div wrapper which contains the <a>
     imageClass: 'BasketImage___StyledImage2-sc-1upl47q-2',
-    imageContainerClass: 'BasketImage___StyledDiv-sc-1upl47q-0',
+    imageContainerClass: 'BasketImage___StyledDiv-sc-1upl47q-0.BasketView___StyledBasketImage-sc-ashrc5-8.gnEhvr',
     nameClass: 'BasketDescription___StyledDiv-sc-1soo8mb-0',
     priceClass: 'BasketPrice___StyledLabel-sc-f8v9oi-1',
     unitsClass: 'CartCTA___StyledDiv2-sc-auxm26-3',
@@ -88,14 +88,25 @@ function extractBigBasketItems(callback) {
     priceText = (priceText || '').replace('₹', '').replace(/[^0-9.]/g, '');
     const price = parseFloat(priceText) || 0;
 
-    items.push({ name, quantity, price, imageUrl, sourceLocation: '', estimatedCarbon: calculateCarbonFootprint(name) });
+    // Keep a reference to the header node so we can reliably map items -> product page anchors later
+    items.push({ name, quantity, price, imageUrl, sourceLocation: '', sourcePincode: '', countryOfOrigin: '', eanCode: '', estimatedCarbon: calculateCarbonFootprint(name), headerRef: header });
   });
 
   // Fetch product pages (best-effort) to get "Sourced & Marketed By:" text
-  const fetchPromises = items.map((item) => {
+  const fetchPromises = items.map((item, idx) => {
     return new Promise((resolve) => {
-      const header = headers.find(h => h.textContent && item.name && h.textContent.includes(item.name.split('\n')[0].trim()));
-      if (!header) return resolve();
+      // Prefer headerRef captured earlier. Fall back to fuzzy matching and index mapping.
+      let header = item.headerRef;
+      if (!header) {
+        const normalize = (s) => (s || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const itemNorm = normalize(item.name).split(' ').filter(Boolean).slice(0,6).join(' ');
+        header = headers.find(h => normalize(h.textContent || '').includes(itemNorm));
+      }
+      // Final fallback: use the headers list by index (if order preserved)
+      if (!header) {
+        resolve();
+        return;
+      }
 
       // Derive the container for this header (was previously defined in a different scope)
       const container = header.closest('li') || header.parentElement || header;
@@ -111,7 +122,10 @@ function extractBigBasketItems(callback) {
       }
       if (!link) link = header.querySelector('a[href*="/pd/"], a[href*="/p/"], a[href*="/product/"], a');
       if (!link) link = container.querySelector('a[href*="/pd/"], a[href*="/p/"], a[href*="/product/"], a');
-      if (!link || !link.href) return resolve();
+      if (!link || !link.href) {
+        resolve();
+        return;
+      }
 
       fetch(link.href)
         .then(res => res.text())
@@ -119,79 +133,135 @@ function extractBigBasketItems(callback) {
           try {
             const doc = new DOMParser().parseFromString(html, 'text/html');
 
-            // Preferred: look for .bullets sections (user said the 2nd child contains sourced/country/ean)
-            const bullets = Array.from(doc.querySelectorAll('.bullets'));
-            let infoText = '';
-            if (bullets.length >= 2) {
-              // pick the second bullets container
-              infoText = bullets[1].textContent || '';
-            } else if (bullets.length === 1) {
-              infoText = bullets[0].textContent || '';
+            // Look for the specific section with product info as provided in the user query
+            const productInfoSection = doc.querySelector('.MoreDetails___StyledSection-sc-1h9rbjh-4');
+            if (productInfoSection) {
+              // Get all bullets divs within this section
+              const bulletsDivs = productInfoSection.querySelectorAll('.bullets');
+              
+              // The second bullets div contains the "Sourced & marketed by" information
+              if (bulletsDivs.length >= 2) {
+                const secondBulletsDiv = bulletsDivs[1];
+                const bulletsText = secondBulletsDiv.textContent || '';
+                
+                // Extract Sourced & Marketed By information
+                const sourcedMatch = bulletsText.match(/Sourced\s*&\s*Marketed\s*By[:\s]*([^\n\r]*)/i);
+                if (sourcedMatch && sourcedMatch[1]) {
+                  // Extract only the relevant part up to the pincode
+                  let sourcedInfo = sourcedMatch[1].trim();
+                  // Look for a pincode pattern (6 digits) and truncate after it
+                  const pincodeMatch = sourcedInfo.match(/(.*?\b\d{6}\b)/);
+                  if (pincodeMatch) {
+                    item.sourceLocation = pincodeMatch[1];
+                  } else {
+                    // If no pincode found, just take the first part
+                    item.sourceLocation = sourcedInfo;
+                  }
+                  
+                  // Extract pincode from the sourced location
+                  const pincodeExtractMatch = item.sourceLocation.match(/\b(\d{6})\b/);
+                  if (pincodeExtractMatch) {
+                    item.sourcePincode = pincodeExtractMatch[1];
+                  }
+                }
+
+                // Extract Country of Origin
+                const countryMatch = bulletsText.match(/Country\s*of\s*Origin[:\s]*([^\n\r]*)/i);
+                if (countryMatch && countryMatch[1]) {
+                  item.countryOfOrigin = countryMatch[1].trim();
+                  // Extract only the first word from country of origin
+                  const firstWord = item.countryOfOrigin.split(/[,\s]+/).filter(word => word.length > 0)[0];
+                  if (firstWord) {
+                    item.countryOfOrigin = firstWord;
+                  }
+                }
+
+                // Extract EAN Code
+                const eanMatch = bulletsText.match(/EAN\s*Code[:\s]*([0-9\-]*)/i);
+                if (eanMatch && eanMatch[1]) {
+                  item.eanCode = eanMatch[1].trim();
+                }
+              }
             }
 
-            // fallback: existing MoreDetails selector
-            if (!infoText) {
-              const sourceEl = doc.querySelector(primary.sourceInfo);
-              if (sourceEl) infoText = sourceEl.textContent || '';
-            }
-
-            // First, try to find an element that explicitly contains the "Sourced & Marketed By" text
-            let foundSourced = false;
-            try {
-              const candidate = Array.from(doc.querySelectorAll('p, div, li, span')).find(el => /Sourced\s*&\s*Marketed\s*By/i.test(el.textContent || ''));
-              if (candidate) {
-                const txt = (candidate.textContent || '').trim();
-                // Extract everything after the phrase — user asked for the whole paragraph after the label
-                const m = txt.match(/Sourced\s*&\s*Marketed\s*By[:\s]*(.*)/i);
-                if (m && m[1]) {
-                  item.sourceLocation = m[1].trim();
+            // Fallback: try to extract from any part of the document if specific section not found
+            if (!item.sourceLocation || !item.sourcePincode) {
+              const fullText = doc.body ? doc.body.innerText : (html || '');
+              
+              // Extract Sourced & Marketed By information
+              const sourcedMatch = fullText.match(/Sourced\s*&\s*Marketed\s*By[:\s]*([^\n\r]*)/i);
+              if (sourcedMatch && sourcedMatch[1]) {
+                // Extract only the relevant part up to the pincode
+                let sourcedInfo = sourcedMatch[1].trim();
+                // Look for a pincode pattern (6 digits) and truncate after it
+                const pincodeMatch = sourcedInfo.match(/(.*?\b\d{6}\b)/);
+                if (pincodeMatch) {
+                  item.sourceLocation = pincodeMatch[1];
                 } else {
-                  // fallback: remove the label and keep the rest of the paragraph
-                  item.sourceLocation = txt.replace(/Sourced\s*&\s*Marketed\s*By[:\s]*/i, '').trim();
+                  // If no pincode found, just take the first part
+                  item.sourceLocation = sourcedInfo;
                 }
-                foundSourced = true;
-              }
-            } catch (e) {
-              // ignore
-            }
-
-            if (!foundSourced && infoText) {
-              // Try to extract Sourced & Marketed By from infoText fallback
-              const m = infoText.match(/Sourced\s*&\s*Marketed\s*By[:\s]*([^\n\r]*)/i);
-              if (m && m[1]) item.sourceLocation = m[1].trim();
-            }
-
-            // Final fallback: search the whole document text for a multi-line block after the label
-            if (!item.sourceLocation) {
-              try {
-                const full = doc.body ? doc.body.innerText : (html || '');
-                const m2 = full.match(/Sourced\s*&\s*marketed\s*by[:\s]*([\s\S]*?)(?=(Country\s*of\s*Origin|EAN|Disclaimer|For Queries|$))/i);
-                if (m2 && m2[1]) {
-                  const txt = m2[1].replace(/\s+/g, ' ').trim();
-                  item.sourceLocation = txt;
+                
+                // Extract pincode from the sourced location
+                const pincodeExtractMatch = item.sourceLocation.match(/\b(\d{6})\b/);
+                if (pincodeExtractMatch) {
+                  item.sourcePincode = pincodeExtractMatch[1];
                 }
-              } catch (e) {
-                // ignore
+              }
+
+              // Extract Country of Origin
+              const countryMatch = fullText.match(/Country\s*of\s*Origin[:\s]*([^\n\r]*)/i);
+              if (countryMatch && countryMatch[1]) {
+                item.countryOfOrigin = countryMatch[1].trim();
+                // Extract only the first word from country of origin
+                const firstWord = item.countryOfOrigin.split(/[,\s]+/).filter(word => word.length > 0)[0];
+                if (firstWord) {
+                  item.countryOfOrigin = firstWord;
+                }
+              }
+
+              // Extract EAN Code
+              const eanMatch = fullText.match(/EAN\s*Code[:\s]*([0-9\-]*)/i);
+              if (eanMatch && eanMatch[1]) {
+                item.eanCode = eanMatch[1].trim();
               }
             }
-
-            // Try to extract a 6-digit Indian pincode from the sourceLocation or the infoText
-            try {
-              const searchText = (item.sourceLocation || infoText || '').toString();
-              const pinMatch = searchText.match(/\b(\d{6})\b/);
-              if (pinMatch) item.sourcePincode = pinMatch[1];
-            } catch (e) {
-              // ignore
-            }
-
-            // Country of Origin (still try from infoText or entire doc)
-            const c = (infoText || '').match(/Country\s*of\s*Origin[:\s]*([^\n\r]*)/i);
-            if (c && c[1]) item.countryOfOrigin = c[1].trim();
-
-            // EAN / barcode
-            const e = (infoText || '').match(/EAN[:\s]*([0-9\-]*)/i) || (infoText || '').match(/\b(EAN|ean|barcode)[:\s]*([0-9\-]+)\b/i);
-            if (e) {
-              item.eanCode = (e[2] || e[1] || '').trim();
+            
+            // Additional extraction: If we have an address in the data, extract just the pincode from it
+            if (!item.sourcePincode) {
+              const fullText = doc.body ? doc.body.innerText : (html || '');
+              // Look for address patterns that end with a 6-digit pincode
+              const addressPatterns = [
+                /(?:Address|address)[^0-9]*([0-9]{6})\b/,
+                /(?:Bangalore|Delhi|Mumbai|Kolkata|Chennai)[^0-9]*([0-9]{6})\b/,
+                /\b([0-9]{6})\b/
+              ];
+              
+              for (const pattern of addressPatterns) {
+                const addressPincodeMatch = fullText.match(pattern);
+                if (addressPincodeMatch && addressPincodeMatch[1]) {
+                  item.sourcePincode = addressPincodeMatch[1];
+                  // If we don't have a source location, use the "Marketed By" part
+                  if (!item.sourceLocation) {
+                    const marketedByMatch = fullText.match(/Marketed\s*By[:\s]*([^\n\r]*)/i);
+                    if (marketedByMatch && marketedByMatch[1]) {
+                      // Extract only the relevant part up to the pincode
+                      let marketedInfo = marketedByMatch[1].trim();
+                      // Look for a pincode pattern (6 digits) and truncate after it
+                      const pincodeMatch = marketedInfo.match(/(.*?\b\d{6}\b)/);
+                      if (pincodeMatch) {
+                        item.sourceLocation = pincodeMatch[1];
+                      } else {
+                        // If no pincode found, just take the first part
+                        item.sourceLocation = marketedInfo;
+                      }
+                    } else {
+                      item.sourceLocation = 'Location with pincode: ' + item.sourcePincode;
+                    }
+                  }
+                  break;
+                }
+              }
             }
           } catch (e) {
             console.error('CarbonCart: parse product html error', e);
@@ -266,13 +336,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'SCAN_CART') {
     const currentSite = window.location.hostname;
     if (currentSite.includes('bigbasket')) {
-      extractBigBasketItems((items) => sendResponse({ success: true, items, site: currentSite }));
+      extractBigBasketItems((items) => {
+        try {
+          sendResponse({ success: true, items, site: currentSite });
+        } catch (e) {
+          console.error('Error sending response:', e);
+        }
+      });
       return true; // keep channel open for async response
     } else if (currentSite.includes('zepto')) {
-      const items = extractZeptoItems();
-      sendResponse({ success: true, items, site: currentSite });
+      try {
+        const items = extractZeptoItems();
+        sendResponse({ success: true, items, site: currentSite });
+      } catch (e) {
+        console.error('Error extracting Zepto items:', e);
+        sendResponse({ success: false, error: 'Failed to extract items' });
+      }
+      return false;
+    } else {
+      sendResponse({ success: false, error: 'Unsupported site' });
       return false;
     }
   }
+  // Return false for unmatched messages
   return false;
 });
