@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 
 function Popup() {
   const [cartData, setCartData] = useState(null);
+  const [pincode, setPincode] = useState('');
   const [isActive, setIsActive] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
 
@@ -71,6 +72,33 @@ function Popup() {
         });
   };
 
+  const commonPincodeSuggestions = [
+    '560001', '110001', '400001', '700001', '600001'
+  ];
+
+  // Load saved user pincode on mount
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem('carboncart_userPincode');
+      if (v) setPincode(v);
+    } catch (e) {}
+  }, []);
+
+  const saveUserPincode = (value) => {
+    const pin = (value || pincode || '').trim();
+    if (!pin) return;
+    try {
+      localStorage.setItem('carboncart_userPincode', pin);
+    } catch (e) {}
+    setPincode(pin);
+    // Send user pincode and current items to background for further processing (e.g., Gemini)
+    try {
+      chrome.runtime.sendMessage({ type: 'USER_PINCODE_SET', pincode: pin, items: cartData?.items || [] });
+    } catch (e) {
+      // ignore
+    }
+  };
+
   const calculateCarbon = (items) => {
     return items.reduce((total, item) => total + (item.estimatedCarbon || 0), 0);
   };
@@ -119,6 +147,26 @@ function Popup() {
           </button>
         </div>
       </header>
+
+      {/* Global user pincode input (one-time) */}
+      <div className="mb-3 flex items-center space-x-2">
+        <input
+          list="global-pin-suggestions"
+          value={pincode}
+          onChange={(e) => setPincode(e.target.value)}
+          placeholder="Enter your pincode (used for all items)"
+          className="flex-1 px-2 py-1 border rounded text-xs"
+        />
+        <datalist id="global-pin-suggestions">
+          {commonPincodeSuggestions.map((s, i) => <option key={i} value={s} />)}
+        </datalist>
+        <button
+          onClick={() => saveUserPincode()}
+          disabled={!!pincode}
+          className={`px-3 py-1 text-xs rounded ${pincode ? 'bg-gray-300 text-gray-700' : 'bg-green-600 text-white'}`}>
+          {pincode ? 'Saved' : 'Save Pincode'}
+        </button>
+      </div>
 
       {cartData && (
         <div className="space-y-3">
@@ -180,6 +228,16 @@ function Popup() {
                         }`}>
                           {(item.estimatedCarbon || 0).toFixed(1)} kg CO₂
                         </div>
+                      </div>
+                      {/* Source information (scraped) */}
+                      <div className="mt-2 text-xs text-gray-600">
+                        <div>Source: <span className="font-medium text-gray-800">{item.sourceLocation || 'Not available'}</span></div>
+                        {item.countryOfOrigin && <div>Origin: <span className="font-medium">{item.countryOfOrigin}</span></div>}
+                        {item.eanCode && <div>EAN: <span className="font-mono">{item.eanCode}</span></div>}
+                        {item.sourcePincode && <div>Seller Pincode: <span className="font-medium">{item.sourcePincode}</span></div>}
+                        {item.sourcePincode && pincode && (
+                          <div>Distance: <span className="font-medium">Calculating…</span></div>
+                        )}
                       </div>
                     </div>
                   </div>
