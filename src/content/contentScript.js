@@ -52,12 +52,14 @@ function extractBigBasketItems() {
   const items = [];
   
   // Prefer the exact BigBasket UL/LI classes when present
-  // Primary selector using provided classnames
-  const primarySelector = 'ul.BasketGroup___StyledUl-sc-obttrd-0.kXTIrq li.BasketItem___StyledLi-sc-pyj73d-0.bbfXYq';
-  const primaryElements = document.querySelectorAll(primarySelector);
+  // Primary approach: find all UL groups that match the provided UL classname
+  const groupUls = Array.from(document.querySelectorAll('ul[class*="BasketGroup___"], ul.kXTIrq'));
 
-  if (primaryElements && primaryElements.length > 0) {
-    primaryElements.forEach(element => {
+  if (groupUls.length > 0) {
+    groupUls.forEach(ul => {
+      // collect LI children that match the BasketItem classname(s)
+      const liElements = Array.from(ul.querySelectorAll('li[class*="BasketItem___"], li.bbfXYq'));
+      liElements.forEach(element => {
       // Heuristics to find product name and quantity inside the LI
       const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
       const qtyEl = element.querySelector('[data-qa*="qty"], [class*="qty"], [class*="quantity"], [aria-label*="qty"]');
@@ -78,24 +80,37 @@ function extractBigBasketItems() {
         }
       }
 
-      name = name.trim();
-      quantity = quantity.trim() || '1 unit';
+        name = name.trim();
+        quantity = quantity.trim() || '1 unit';
 
-      if (name) {
-        items.push({
-          name,
-          quantity,
-          estimatedCarbon: calculateCarbonFootprint(name)
-        });
+        if (name) {
+          items.push({
+            name,
+            quantity,
+            estimatedCarbon: calculateCarbonFootprint(name)
+          });
+        }
+      });
+    });
+
+    // dedupe by name+quantity
+    const deduped = [];
+    const seen = new Set();
+    items.forEach(it => {
+      const key = `${it.name}||${it.quantity}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(it);
       }
     });
-    return items; // return only real scraped items
+    return deduped;
   }
 
   // If the primary selector didn't match, try some broader selectors (no demo fallback)
-  const fallbackSelectors = ['[data-qa="cart-item"]', '[class*="basket-item"]', '[class*="cart-item"]', '.product-item', '.item'];
+  // If no BasketGroup ULs found, try broader selectors and aggregate across all matches
+  const fallbackSelectors = ['[data-qa="cart-item"]', '[class*="basket-item"]', '[class*="cart-item"]', '.product-item', '.item', 'ul li'];
   for (const selector of fallbackSelectors) {
-    const elements = document.querySelectorAll(selector);
+    const elements = Array.from(document.querySelectorAll(selector));
     if (elements && elements.length > 0) {
       elements.forEach(element => {
         const nameEl = element.querySelector('[data-qa="product-name"], [class*="product-name"], [class*="name"], a, h3, h4');
@@ -123,9 +138,22 @@ function extractBigBasketItems() {
           });
         }
       });
-      // return whatever we found from broader selectors
-      return items;
+      // continue to next selector to aggregate more items rather than returning early
     }
+  }
+
+  // dedupe aggregated fallback results
+  if (items.length > 0) {
+    const deduped = [];
+    const seen = new Set();
+    items.forEach(it => {
+      const key = `${it.name}||${it.quantity}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(it);
+      }
+    });
+    return deduped;
   }
 
   // If nothing found, return an empty array (do NOT return demo/fallback data as requested)

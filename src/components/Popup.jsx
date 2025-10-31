@@ -4,25 +4,26 @@ function Popup() {
   const [cartData, setCartData] = useState(null);
   const [isActive, setIsActive] = useState(false);
 
+  // Keep a reference to the runtime listener so we can remove it on unmount
   useEffect(() => {
-    // Listen for messages from content script
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const onMessage = (message, sender, sendResponse) => {
       console.log('Message received in React:', message);
-      
       if (message.type === 'CART_DETECTED') {
         setCartData(message.data);
         setIsActive(true);
-        
-        // Auto-show the popup when cart is detected
         chrome.action.openPopup();
       }
-      
       return true;
-    });
+    };
 
-    // Check current tab on load
-    checkCurrentTab();
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => {
+      try { chrome.runtime.onMessage.removeListener(onMessage); } catch (e) { /* ignore */ }
+    };
   }, []);
+
+  // On first load, check current tab for cart data
+  useEffect(() => { checkCurrentTab(); }, []);
 
   const checkCurrentTab = async () => {
     // Get current active tab
@@ -42,6 +43,17 @@ function Popup() {
         }
       });
     }
+  };
+
+  const scanNow = async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return;
+    chrome.tabs.sendMessage(tab.id, { action: 'SCAN_CART' }, (response) => {
+      if (response?.success) {
+        setCartData({ site: response.site, items: response.items });
+        setIsActive(true);
+      }
+    });
   };
 
   const calculateCarbon = (items) => {
@@ -104,22 +116,38 @@ function Popup() {
 
           {/* Cart Items */}
           <div className="bg-white p-3 rounded-lg border border-gray-200">
-            <h4 className="font-semibold text-gray-800 mb-2">🛒 Cart Items</h4>
-            {cartData.items.map((item, index) => (
-              <div key={index} className="flex justify-between items-center py-2 border-b border-gray-100 last:border-0">
-                <div className="flex-1">
-                  <span className="text-sm font-medium block">{item.name}</span>
-                  <span className="text-xs text-gray-500">{item.quantity}</span>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="font-semibold text-gray-800">🛒 Cart Items</h4>
+              <div className="text-xs text-gray-500">{(cartData.items || []).length} items</div>
+            </div>
+
+            {(!cartData.items || cartData.items.length === 0) ? (
+              <div className="text-center py-6 text-sm text-gray-600">
+                No items detected on this page.
+                <div className="mt-3">
+                  <button onClick={scanNow} className="px-3 py-1 bg-green-600 text-white rounded text-xs">Scan Cart</button>
                 </div>
-                <span className={`text-sm font-semibold ${
-                  item.estimatedCarbon > 2 ? 'text-red-600' : 
-                  item.estimatedCarbon > 1 ? 'text-yellow-600' : 
-                  'text-green-600'
-                }`}>
-                  {item.estimatedCarbon} kg
-                </span>
               </div>
-            ))}
+            ) : (
+              <div className="space-y-2">
+                {cartData.items.map((item, index) => (
+                  <div key={index} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
+                    <div className="flex-1">
+                      <div className="text-sm font-medium">{item.name}</div>
+                      <div className="text-xs text-gray-500">{item.quantity}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-sm font-semibold ${
+                        item.estimatedCarbon > 2 ? 'text-red-600' : 
+                        item.estimatedCarbon > 1 ? 'text-yellow-600' : 
+                        'text-green-600'
+                      }`}>{(item.estimatedCarbon || 0).toFixed(2)} kg</div>
+                      <div className="text-xs text-gray-400">per unit</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Suggestions */}
