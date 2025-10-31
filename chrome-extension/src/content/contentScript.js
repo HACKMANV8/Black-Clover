@@ -50,7 +50,9 @@ function extractBigBasketItems(callback) {
   const items = [];
   const primary = {
     header: '.ItemsHeader___StyledDiv-sc-1sc68yr-0.ZFUYM',
+    // imageClass targets the <img> element; imageContainerClass targets the div wrapper which contains the <a>
     imageClass: 'BasketImage___StyledImage2-sc-1upl47q-2',
+    imageContainerClass: 'BasketImage___StyledDiv-sc-1upl47q-0',
     nameClass: 'BasketDescription___StyledDiv-sc-1soo8mb-0',
     priceClass: 'BasketPrice___StyledLabel-sc-f8v9oi-1',
     unitsClass: 'CartCTA___StyledDiv2-sc-auxm26-3',
@@ -95,7 +97,20 @@ function extractBigBasketItems(callback) {
       const header = headers.find(h => h.textContent && item.name && h.textContent.includes(item.name.split('\n')[0].trim()));
       if (!header) return resolve();
 
-      const link = header.querySelector('a[href*="/pd/"]') || header.querySelector('a[href*="/product/"]') || header.querySelector('a');
+      // Derive the container for this header (was previously defined in a different scope)
+      const container = header.closest('li') || header.parentElement || header;
+
+      // Prefer anchor inside the image container (per your note). Fall back to header or container anchors.
+      let link = null;
+      try {
+        // Prefer the explicit image container div (user-specified) which contains the <a> without classes.
+        const imgContainer = container.querySelector(`div[class*="${primary.imageContainerClass}"], div[class*="${primary.imageClass}"]`);
+        if (imgContainer) link = imgContainer.querySelector('a');
+      } catch (e) {
+        // ignore selector errors
+      }
+      if (!link) link = header.querySelector('a[href*="/pd/"], a[href*="/p/"], a[href*="/product/"], a');
+      if (!link) link = container.querySelector('a[href*="/pd/"], a[href*="/p/"], a[href*="/product/"], a');
       if (!link || !link.href) return resolve();
 
       fetch(link.href)
@@ -103,12 +118,80 @@ function extractBigBasketItems(callback) {
         .then(html => {
           try {
             const doc = new DOMParser().parseFromString(html, 'text/html');
-            const sourceEl = doc.querySelector(primary.sourceInfo);
-            if (sourceEl) {
-              const txt = sourceEl.textContent || '';
-              const m = txt.match(/Sourced & Marketed By:(.*)/i);
+
+            // Preferred: look for .bullets sections (user said the 2nd child contains sourced/country/ean)
+            const bullets = Array.from(doc.querySelectorAll('.bullets'));
+            let infoText = '';
+            if (bullets.length >= 2) {
+              // pick the second bullets container
+              infoText = bullets[1].textContent || '';
+            } else if (bullets.length === 1) {
+              infoText = bullets[0].textContent || '';
+            }
+
+            // fallback: existing MoreDetails selector
+            if (!infoText) {
+              const sourceEl = doc.querySelector(primary.sourceInfo);
+              if (sourceEl) infoText = sourceEl.textContent || '';
+            }
+
+            // First, try to find an element that explicitly contains the "Sourced & Marketed By" text
+            let foundSourced = false;
+            try {
+              const candidate = Array.from(doc.querySelectorAll('p, div, li, span')).find(el => /Sourced\s*&\s*Marketed\s*By/i.test(el.textContent || ''));
+              if (candidate) {
+                const txt = (candidate.textContent || '').trim();
+                // Extract everything after the phrase — user asked for the whole paragraph after the label
+                const m = txt.match(/Sourced\s*&\s*Marketed\s*By[:\s]*(.*)/i);
+                if (m && m[1]) {
+                  item.sourceLocation = m[1].trim();
+                } else {
+                  // fallback: remove the label and keep the rest of the paragraph
+                  item.sourceLocation = txt.replace(/Sourced\s*&\s*Marketed\s*By[:\s]*/i, '').trim();
+                }
+                foundSourced = true;
+              }
+            } catch (e) {
+              // ignore
+            }
+
+            if (!foundSourced && infoText) {
+              // Try to extract Sourced & Marketed By from infoText fallback
+              const m = infoText.match(/Sourced\s*&\s*Marketed\s*By[:\s]*([^\n\r]*)/i);
               if (m && m[1]) item.sourceLocation = m[1].trim();
-              else item.sourceLocation = txt.replace(/Sourced & Marketed By[:\s]*/i, '').trim();
+            }
+
+            // Final fallback: search the whole document text for a multi-line block after the label
+            if (!item.sourceLocation) {
+              try {
+                const full = doc.body ? doc.body.innerText : (html || '');
+                const m2 = full.match(/Sourced\s*&\s*marketed\s*by[:\s]*([\s\S]*?)(?=(Country\s*of\s*Origin|EAN|Disclaimer|For Queries|$))/i);
+                if (m2 && m2[1]) {
+                  const txt = m2[1].replace(/\s+/g, ' ').trim();
+                  item.sourceLocation = txt;
+                }
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            // Try to extract a 6-digit Indian pincode from the sourceLocation or the infoText
+            try {
+              const searchText = (item.sourceLocation || infoText || '').toString();
+              const pinMatch = searchText.match(/\b(\d{6})\b/);
+              if (pinMatch) item.sourcePincode = pinMatch[1];
+            } catch (e) {
+              // ignore
+            }
+
+            // Country of Origin (still try from infoText or entire doc)
+            const c = (infoText || '').match(/Country\s*of\s*Origin[:\s]*([^\n\r]*)/i);
+            if (c && c[1]) item.countryOfOrigin = c[1].trim();
+
+            // EAN / barcode
+            const e = (infoText || '').match(/EAN[:\s]*([0-9\-]*)/i) || (infoText || '').match(/\b(EAN|ean|barcode)[:\s]*([0-9\-]+)\b/i);
+            if (e) {
+              item.eanCode = (e[2] || e[1] || '').trim();
             }
           } catch (e) {
             console.error('CarbonCart: parse product html error', e);
